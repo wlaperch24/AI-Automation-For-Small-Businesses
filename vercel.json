@@ -1,0 +1,16 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/follow-up",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/pre-call-reminders",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/retries",
+      "schedule": "*/5 * * * *"
+    }
+  ]
+}

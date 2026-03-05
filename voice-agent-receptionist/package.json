@@ -1,0 +1,29 @@
+{
+  "name": "voice-agent-receptionist",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local MVP voice agent receptionist for a plumbing company",
+  "type": "commonjs",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "dev:text": "tsx src/sim/call_simulator.ts --mode=text",
+    "dev:voice": "tsx src/sim/call_simulator.ts --mode=voice",
+    "dev:retell": "tsx src/retell/server.ts",
+    "selftest": "tsx src/sim/self_test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "luxon": "^3.7.2",
+    "openai": "^4.104.0"
+  },
+  "devDependencies": {
+    "@types/luxon": "^3.7.1",
+    "@types/node": "^24.9.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
