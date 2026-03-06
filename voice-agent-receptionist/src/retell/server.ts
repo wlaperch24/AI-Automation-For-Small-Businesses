@@ -2,10 +2,9 @@ import http from "node:http";
 import { createHash } from "node:crypto";
 import { URL } from "node:url";
 import { loadRuntimeConfig } from "../sim/call_simulator";
-import { CreateAppointmentArgs, LocalCalendarTool } from "../tools/calendar";
-import { SqliteLogger } from "../tools/logging";
-import { QuoteService } from "../services/quote";
-import { SimulatedSmsTool } from "../tools/sms";
+import { CreateAppointmentArgs } from "../tools/calendar";
+import { createMultiAgentCoordinator } from "../agents/manager/coordinator";
+import { createMultiAgentRuntime } from "../agents/runtime";
 
 type JsonObject = Record<string, unknown>;
 
@@ -168,17 +167,21 @@ if (!Number.isFinite(retellPort) || retellPort <= 0) {
   throw new Error("RETELL_PORT must be a positive integer.");
 }
 
-const db = new SqliteLogger(runtimeConfig.dbPath, runtimeConfig.schemaPath);
-const calendar = new LocalCalendarTool(db, {
-  timezone: runtimeConfig.businessTimezone,
-  workdayStartHour: runtimeConfig.workdayStartHour,
-  workdayEndHour: runtimeConfig.workdayEndHour,
-  saturdayStartHour: runtimeConfig.saturdayStartHour,
-  saturdayEndHour: runtimeConfig.saturdayEndHour,
-  slotDurationHours: runtimeConfig.slotDurationHours
+const runtime = createMultiAgentRuntime({
+  dbPath: runtimeConfig.dbPath,
+  schemaPath: runtimeConfig.schemaPath,
+  operatorEmail: runtimeConfig.operatorEmail,
+  calendarConfig: {
+    timezone: runtimeConfig.businessTimezone,
+    workdayStartHour: runtimeConfig.workdayStartHour,
+    workdayEndHour: runtimeConfig.workdayEndHour,
+    saturdayStartHour: runtimeConfig.saturdayStartHour,
+    saturdayEndHour: runtimeConfig.saturdayEndHour,
+    slotDurationHours: runtimeConfig.slotDurationHours
+  }
 });
-const sms = new SimulatedSmsTool(db);
-const quoteService = new QuoteService();
+const db = runtime.db;
+const coordinator = createMultiAgentCoordinator(runtime);
 const callSessionMap = new Map<string, number>();
 const timerStartedAtMsMap = new Map<string, number>();
 const timerEndedMap = new Map<string, boolean>();
@@ -359,14 +362,14 @@ function handleListAvailability(payload: JsonObject, response: http.ServerRespon
   const callId = extractCallId(payload);
   const sessionId = getOrCreateSessionId(callId, extractCallerPhone(payload));
 
-  const result = calendar.listAvailability({
+  const result = coordinator.listAvailability({
     date_range_start: asString(args.date_range_start),
     date_range_end: asString(args.date_range_end),
     zip_or_area: asString(args.zip_or_area),
     urgency: asString(args.urgency)
   });
 
-  logToolEvent(sessionId, "retell.listAvailability", args, result, "ok");
+  logToolEvent(sessionId, "retell.listAvailability", args, result, result.ok ? "ok" : "error");
   sendJson(response, 200, result);
 }
 
@@ -397,37 +400,12 @@ function handleCreateAppointment(payload: JsonObject, response: http.ServerRespo
     return;
   }
 
-  const created = calendar.createAppointment(booking);
-  if (!created.ok) {
-    logToolEvent(sessionId, "retell.createAppointment", args, created, "error");
-    sendJson(response, 200, created);
-    return;
-  }
+  const result = coordinator.createAppointment({
+    sessionId,
+    args: booking
+  });
 
-  const confirmationSms = sms.sendSms(
-    {
-      to: booking.phone,
-      message: `Confirmed: Plumbing appointment scheduled for ${created.window_label}. Reply RESCHEDULE if you need to change it.`
-    },
-    sessionId
-  );
-
-  const quote = quoteService.createQuote(booking.issue, booking.urgency);
-  const quoteSms = sms.sendSms(
-    {
-      to: booking.phone,
-      message: quoteService.buildQuoteSms(booking.name, quote)
-    },
-    sessionId
-  );
-
-  const result = {
-    ...created,
-    confirmation_sms_id: confirmationSms.sms_id,
-    quote_sms_id: quoteSms.sms_id
-  };
-
-  logToolEvent(sessionId, "retell.createAppointment", args, result, "ok");
+  logToolEvent(sessionId, "retell.createAppointment", args, result, result.ok ? "ok" : "error");
   sendJson(response, 200, result);
 }
 
@@ -448,21 +426,13 @@ function handleCancelAppointment(payload: JsonObject, response: http.ServerRespo
     return;
   }
 
-  const existing = db.getAppointmentById(appointmentId);
-  const cancelled = calendar.cancelAppointment({
-    appointment_id: appointmentId,
-    reason: asString(args.reason)
+  const cancelled = coordinator.cancelAppointment({
+    sessionId,
+    args: {
+      appointment_id: appointmentId,
+      reason: asString(args.reason)
+    }
   });
-
-  if (cancelled.ok && existing) {
-    sms.sendSms(
-      {
-        to: existing.phone,
-        message: `Your plumbing appointment has been cancelled. Reply anytime to schedule a new window.`
-      },
-      sessionId
-    );
-  }
 
   logToolEvent(sessionId, "retell.cancelAppointment", args, cancelled, cancelled.ok ? "ok" : "error");
   sendJson(response, 200, cancelled);
@@ -488,23 +458,15 @@ function handleRescheduleAppointment(payload: JsonObject, response: http.ServerR
     return;
   }
 
-  const existing = db.getAppointmentById(appointmentId);
-  const rescheduled = calendar.rescheduleAppointment({
-    appointment_id: appointmentId,
-    new_window_start: newWindowStart,
-    new_window_end: newWindowEnd,
-    reason: asString(args.reason)
+  const rescheduled = coordinator.rescheduleAppointment({
+    sessionId,
+    args: {
+      appointment_id: appointmentId,
+      new_window_start: newWindowStart,
+      new_window_end: newWindowEnd,
+      reason: asString(args.reason)
+    }
   });
-
-  if (rescheduled.ok && existing) {
-    sms.sendSms(
-      {
-        to: existing.phone,
-        message: `Your plumbing appointment is now set for ${rescheduled.window_label}.`
-      },
-      sessionId
-    );
-  }
 
   logToolEvent(sessionId, "retell.rescheduleAppointment", args, rescheduled, rescheduled.ok ? "ok" : "error");
   sendJson(response, 200, rescheduled);
@@ -701,6 +663,7 @@ const server = http.createServer(async (request, response) => {
 
 server.listen(retellPort, () => {
   console.log(`[SYSTEM] Retell bridge listening on http://localhost:${retellPort}`);
+  console.log(`[SYSTEM] Multi-agent coordinator online: ${coordinator.getAgentRegistry().join(", ")}`);
   console.log("[SYSTEM] Endpoints:");
   console.log("[SYSTEM]   GET  /health");
   console.log("[SYSTEM]   POST /retell/tools/listAvailability");

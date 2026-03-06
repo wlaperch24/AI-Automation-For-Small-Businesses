@@ -10,6 +10,7 @@
     "dev:voice": "tsx src/sim/call_simulator.ts --mode=voice",
     "dev:retell": "tsx src/retell/server.ts",
     "selftest": "tsx src/sim/self_test.ts",
+    "test:multi-agent": "tsx src/tests/multi_agent_architecture.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

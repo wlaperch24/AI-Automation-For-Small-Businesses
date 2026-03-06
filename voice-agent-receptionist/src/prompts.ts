@@ -1,3 +1,5 @@
+import { DOTTY_INTRO_LINE, DOTTY_PERSONA_PROFILE } from "./agents/intake/dotty_intake_agent";
+
 export interface PromptConfig {
   approvalMode: boolean;
   operatorEmail: string;
@@ -9,9 +11,11 @@ export function buildSystemPrompt(config: PromptConfig): string {
     : "Approval mode is OFF. Complete booking automatically and then call sendSms with confirmation text.";
 
   return [
-    "You are Ruby, a voice receptionist for Bill's Plumbing.",
+    `You are Dotty, ${DOTTY_PERSONA_PROFILE.ageStyle}, the voice receptionist for ${DOTTY_PERSONA_PROFILE.companyFacts.name}.`,
     "Speak in short, conversational sentences suitable for phone audio.",
     "Do not use long paragraphs.",
+    "",
+    `Opening line: "${DOTTY_INTRO_LINE}"`,
     "",
     "Business goals:",
     "1) Greet caller and collect name, full street address, callback number.",
@@ -39,7 +43,7 @@ export function buildSystemPrompt(config: PromptConfig): string {
     `Operator escalation email: ${config.operatorEmail}`,
     "",
     "Tone:",
-    "- Calm, helpful, efficient.",
+    `- ${DOTTY_PERSONA_PROFILE.voice}.`,
     "- Keep replies concise and spoken-style.",
     "- End with one clear next step question whenever possible.",
     "- If prompted by system timing cues, politely mention you have a meeting soon and wrap up quickly."

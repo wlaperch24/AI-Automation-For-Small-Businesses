@@ -9,6 +9,7 @@ Local MVP that simulates a plumbing receptionist with:
 - Full call/tool logging in SQLite
 - Text and voice simulator modes
 - Voice call budget guardrails (wrap-up + hard stop timer)
+- Multi-agent manager architecture (shared runtime + specialist agents)
 
 ## What This MVP Does
 
@@ -70,6 +71,12 @@ npm run dev:retell
 
 ```bash
 npm run selftest
+```
+
+- Multi-agent architecture smoke test:
+
+```bash
+npm run test:multi-agent
 ```
 
 - Type check:
@@ -136,6 +143,26 @@ If `APPROVAL_MODE=true`:
 - CLI waits for operator command:
   - `approve` to create appointment + send confirmation and quote SMS
   - `reject` to decline booking
+
+## Multi-Agent Architecture
+
+The project now uses a manager + specialist agent structure:
+
+- `dotty_intake` (persona + intake requirements)
+- `scheduling` (availability, booking, cancel, reschedule)
+- `quote_followup` (confirmation and quote SMS)
+- `callback_ops` (office manager follow-up task creation)
+- `manager` coordinator (delegates tasks across agents)
+
+Code location:
+
+- `/Users/williamlaperch/Documents/GitHub/AI Automation for Small Business/voice-agent-receptionist/src/agents`
+
+Why this matters:
+
+- You can add future agents without rewriting the whole call flow.
+- If one workflow changes (for example quotes), scheduling logic stays isolated.
+- This maps cleanly to future n8n/VPS orchestration.
 
 ## Voice Call Time Limits
 
