@@ -60,11 +60,24 @@ function parseDateInZone(value: string | undefined, timezone: string): DateTime 
   return null;
 }
 
+function toUtcIsoFromInput(value: string, timezone: string): string | null {
+  const hasExplicitZone = /(?:Z|[+\-]\d{2}:\d{2})$/.test(value);
+  const parsed = hasExplicitZone
+    ? DateTime.fromISO(value, { setZone: true })
+    : DateTime.fromISO(value, { zone: timezone });
+
+  if (!parsed.isValid) {
+    return null;
+  }
+
+  return parsed.toUTC().toISO();
+}
+
 function toPriority(urgency: string | undefined): boolean {
   if (!urgency) {
     return false;
   }
-  return /(active leak|flooding|no water|sewage backup|urgent|emergency)/i.test(urgency);
+  return /(active[ _-]?leak|flooding|no[ _-]?water|sewage[ _-]?backup|urgent|emergency)/i.test(urgency);
 }
 
 function isAddressLikelyComplete(address: string): boolean {
@@ -85,10 +98,21 @@ export class LocalCalendarTool {
   listAvailability(args: ListAvailabilityArgs): { ok: true; windows: AvailabilityWindow[] } | { ok: false; error: string } {
     const zone = this.config.timezone;
     const now = DateTime.now().setZone(zone);
-    const start = parseDateInZone(args.date_range_start, zone) ?? now.startOf("day");
-    const end = parseDateInZone(args.date_range_end, zone) ?? start.plus({ days: 14 }).endOf("day");
+    let start = parseDateInZone(args.date_range_start, zone) ?? now.startOf("day");
+    let end = parseDateInZone(args.date_range_end, zone) ?? start.plus({ days: 14 }).endOf("day");
 
-    if (end <= start) {
+    // Retell often sends same-day start/end for "tomorrow afternoon"; treat that as valid.
+    if (end < start && end.hasSame(start, "day")) {
+      end = start.endOf("day");
+    }
+
+    // If the requested range is entirely in the past (common in simulator year drift), fall back to upcoming windows.
+    if (end < now.startOf("day")) {
+      start = now.startOf("day");
+      end = start.plus({ days: 14 }).endOf("day");
+    }
+
+    if (end < start) {
       return { ok: false, error: "date_range_end must be after date_range_start" };
     }
 
@@ -140,8 +164,18 @@ export class LocalCalendarTool {
       };
     }
 
-    const start = DateTime.fromISO(args.window_start, { zone: "utc" });
-    const end = DateTime.fromISO(args.window_end, { zone: "utc" });
+    const normalizedWindowStart = toUtcIsoFromInput(args.window_start, this.config.timezone);
+    const normalizedWindowEnd = toUtcIsoFromInput(args.window_end, this.config.timezone);
+    if (!normalizedWindowStart || !normalizedWindowEnd) {
+      return {
+        ok: false,
+        error_code: "INVALID_WINDOW",
+        message: "The selected appointment window is invalid."
+      };
+    }
+
+    const start = DateTime.fromISO(normalizedWindowStart, { zone: "utc" });
+    const end = DateTime.fromISO(normalizedWindowEnd, { zone: "utc" });
 
     if (!start.isValid || !end.isValid || end <= start) {
       return {
@@ -151,7 +185,7 @@ export class LocalCalendarTool {
       };
     }
 
-    if (this.db.hasAppointmentConflict(args.window_start, args.window_end)) {
+    if (this.db.hasAppointmentConflict(normalizedWindowStart, normalizedWindowEnd)) {
       return {
         ok: false,
         error_code: "DOUBLE_BOOKED",
@@ -165,8 +199,8 @@ export class LocalCalendarTool {
       address: args.address.trim(),
       issue: args.issue.trim(),
       urgency: args.urgency.trim(),
-      windowStart: args.window_start,
-      windowEnd: args.window_end,
+      windowStart: normalizedWindowStart,
+      windowEnd: normalizedWindowEnd,
       notes: (args.notes ?? "").trim()
     };
 
@@ -218,8 +252,18 @@ export class LocalCalendarTool {
       };
     }
 
-    const start = DateTime.fromISO(args.new_window_start, { zone: "utc" });
-    const end = DateTime.fromISO(args.new_window_end, { zone: "utc" });
+    const normalizedWindowStart = toUtcIsoFromInput(args.new_window_start, this.config.timezone);
+    const normalizedWindowEnd = toUtcIsoFromInput(args.new_window_end, this.config.timezone);
+    if (!normalizedWindowStart || !normalizedWindowEnd) {
+      return {
+        ok: false,
+        error_code: "INVALID_WINDOW",
+        message: "The new window is invalid."
+      };
+    }
+
+    const start = DateTime.fromISO(normalizedWindowStart, { zone: "utc" });
+    const end = DateTime.fromISO(normalizedWindowEnd, { zone: "utc" });
 
     if (!start.isValid || !end.isValid || end <= start) {
       return {
@@ -229,7 +273,7 @@ export class LocalCalendarTool {
       };
     }
 
-    if (this.db.hasAppointmentConflict(args.new_window_start, args.new_window_end, args.appointment_id)) {
+    if (this.db.hasAppointmentConflict(normalizedWindowStart, normalizedWindowEnd, args.appointment_id)) {
       return {
         ok: false,
         error_code: "DOUBLE_BOOKED",
@@ -237,7 +281,7 @@ export class LocalCalendarTool {
       };
     }
 
-    const updated = this.db.rescheduleAppointment(args.appointment_id, args.new_window_start, args.new_window_end);
+    const updated = this.db.rescheduleAppointment(args.appointment_id, normalizedWindowStart, normalizedWindowEnd);
     if (!updated) {
       return {
         ok: false,

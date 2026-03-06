@@ -59,7 +59,7 @@ export function loadRuntimeConfig(overrides: Partial<RuntimeConfig> = {}): Runti
     dbPath: process.env.DB_PATH || "./data/receptionist.sqlite",
     operatorEmail: process.env.OPERATOR_EMAIL || "billsplumbingny@gmail.com",
     voiceWrapupSeconds: parseNumber(process.env.VOICE_WRAPUP_SECONDS, 212),
-    voiceHardMaxSeconds: parseNumber(process.env.VOICE_HARD_MAX_SECONDS, 276),
+    voiceHardMaxSeconds: parseNumber(process.env.VOICE_HARD_MAX_SECONDS, 288),
     schemaPath: path.join(baseDir, "src/db/schema.sql"),
     ...overrides
   };

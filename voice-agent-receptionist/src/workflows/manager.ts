@@ -104,8 +104,22 @@ function extractName(text: string): string | undefined {
 
 function extractAddress(text: string): string | undefined {
   const normalized = cleanText(text);
-  if (/\d+\s+[A-Za-z0-9 .'-]+(street|st|avenue|ave|road|rd|drive|dr|lane|ln|way|court|ct|boulevard|blvd|place|pl)\b/i.test(normalized)) {
-    return normalized;
+
+  const streetSegment =
+    /\b\d+\s+[A-Za-z0-9][A-Za-z0-9 .,'-]*?\b(?:street|st|avenue|ave|road|rd|drive|dr|lane|ln|way|court|ct|boulevard|blvd|place|pl)\b(?:\s+[A-Za-z.'-]+){0,4}(?:\s+[A-Z]{2})?(?:\s+\d{5})?(?=(?:\s*(?:,|\.|;|$|callback\b|phone\b|call back\b|my number\b)))/i;
+
+  const addressCue = normalized.match(/(?:address(?:\s+is)?[:\s-]+)(.+)$/i);
+  if (addressCue?.[1]) {
+    const scoped = cleanText(addressCue[1]);
+    const scopedMatch = scoped.match(streetSegment);
+    if (scopedMatch?.[0]) {
+      return cleanText(scopedMatch[0].replace(/[.,;:]\s*$/, ""));
+    }
+  }
+
+  const directMatch = normalized.match(streetSegment);
+  if (directMatch?.[0]) {
+    return cleanText(directMatch[0].replace(/[.,;:]\s*$/, ""));
   }
 
   return undefined;

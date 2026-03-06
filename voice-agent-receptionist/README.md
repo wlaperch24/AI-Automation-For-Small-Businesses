@@ -95,7 +95,7 @@ Key fields:
 - `SLOT_DURATION_HOURS`
 - `DB_PATH`
 - `VOICE_WRAPUP_SECONDS` (default `212` = 3:32)
-- `VOICE_HARD_MAX_SECONDS` (default `276` = 4:36)
+- `VOICE_HARD_MAX_SECONDS` (default `288` = 4:48)
 - `RETELL_API_KEY`
 - `RETELL_WEBHOOK_SECRET`
 - `RETELL_AGENT_ID`
@@ -122,6 +122,7 @@ Future stubs (not wired in Phase A):
    - `POST {YOUR_URL}/retell/tools/createAppointment`
    - `POST {YOUR_URL}/retell/tools/cancelAppointment`
    - `POST {YOUR_URL}/retell/tools/rescheduleAppointment`
+   - `POST {YOUR_URL}/retell/tools/getCallTimer`
 5. Configure webhook URL:
    - `POST {YOUR_URL}/retell/webhook`
 6. Health check endpoint:
@@ -142,8 +143,16 @@ If `APPROVAL_MODE=true`:
   - identifying issue
   - locking an appointment
   - collecting missing critical details
-- At `4:36` (default), the call is forcibly ended.
+- At `4:48` (default), the call is forcibly ended.
 - If booking/details are still incomplete at hard stop, the app creates a follow-up callback task for the office manager in SQLite (`follow_up_tasks` table).
+- Retell bridge exposes `getCallTimer`, which returns:
+  - `elapsed_seconds`
+  - `should_wrap`
+  - `should_end`
+  so your Retell prompt can make deterministic wrap/end decisions.
+- Optional request arg for timer resets:
+  - `checkpoint` values: `first_turn`, `call_start`, or `reset`
+  - When provided, timer baseline is reset for that call id.
 
 ## Text Mode Operator Commands
 

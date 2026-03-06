@@ -10,16 +10,25 @@ interface Scenario {
   expectOutcome: string;
   expectAppointments: number;
   expectSms: number;
+  expectAddress?: string;
   approveWhenPending: boolean;
 }
 
-function readCounts(dbPath: string): { appointments: number; sms: number; outcome: string } {
+function readCounts(dbPath: string): { appointments: number; sms: number; outcome: string; bookedAddress?: string } {
   const db = new DatabaseSync(dbPath);
   const appointments = Number((db.prepare("SELECT COUNT(*) as count FROM appointments WHERE status = 'BOOKED'").get() as any).count);
   const sms = Number((db.prepare("SELECT COUNT(*) as count FROM sms_messages").get() as any).count);
   const outcome = String((db.prepare("SELECT outcome FROM call_sessions ORDER BY id DESC LIMIT 1").get() as any).outcome || "");
+  const bookedRow = db
+    .prepare("SELECT address FROM appointments WHERE status = 'BOOKED' ORDER BY id DESC LIMIT 1")
+    .get() as { address?: string } | undefined;
   db.close();
-  return { appointments, sms, outcome };
+  return {
+    appointments,
+    sms,
+    outcome,
+    bookedAddress: bookedRow?.address
+  };
 }
 
 async function runScenario(index: number, scenario: Scenario): Promise<boolean> {
@@ -76,11 +85,12 @@ async function runScenario(index: number, scenario: Scenario): Promise<boolean> 
   const pass =
     counts.outcome === scenario.expectOutcome &&
     counts.appointments === scenario.expectAppointments &&
-    counts.sms === scenario.expectSms;
+    counts.sms === scenario.expectSms &&
+    (scenario.expectAddress === undefined || counts.bookedAddress === scenario.expectAddress);
 
   console.log(
     `[SELFTEST] ${scenario.name}: ${pass ? "PASS" : "FAIL"} ` +
-      `(outcome=${counts.outcome}, appointments=${counts.appointments}, sms=${counts.sms})`
+      `(outcome=${counts.outcome}, appointments=${counts.appointments}, sms=${counts.sms}, address=${counts.bookedAddress ?? "n/a"})`
   );
 
   return pass;
@@ -100,6 +110,7 @@ async function main(): Promise<void> {
       expectOutcome: "BOOKED",
       expectAppointments: 1,
       expectSms: 2,
+      expectAddress: "123 Main Street Brooklyn NY 11201",
       approveWhenPending: true
     },
     {
@@ -114,6 +125,7 @@ async function main(): Promise<void> {
       expectOutcome: "BOOKED",
       expectAppointments: 1,
       expectSms: 2,
+      expectAddress: "88 Water Street New York NY 10005",
       approveWhenPending: true
     },
     {

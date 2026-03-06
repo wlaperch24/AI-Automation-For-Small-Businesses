@@ -180,6 +180,35 @@ const calendar = new LocalCalendarTool(db, {
 const sms = new SimulatedSmsTool(db);
 const quoteService = new QuoteService();
 const callSessionMap = new Map<string, number>();
+const timerStartedAtMsMap = new Map<string, number>();
+const timerEndedMap = new Map<string, boolean>();
+const timerLastSeenAtMsMap = new Map<string, number>();
+const TIMER_IDLE_RESET_MS = 90_000;
+const listAvailabilityPaths = new Set([
+  "/retell/tools/listAvailability",
+  "/retell/tools/list_availability",
+  "/retell/tools/listavailability"
+]);
+const createAppointmentPaths = new Set([
+  "/retell/tools/createAppointment",
+  "/retell/tools/create_appointment",
+  "/retell/tools/createappointment"
+]);
+const cancelAppointmentPaths = new Set([
+  "/retell/tools/cancelAppointment",
+  "/retell/tools/cancel_appointment",
+  "/retell/tools/cancelappointment"
+]);
+const rescheduleAppointmentPaths = new Set([
+  "/retell/tools/rescheduleAppointment",
+  "/retell/tools/reschedule_appointment",
+  "/retell/tools/rescheduleappointment"
+]);
+const getCallTimerPaths = new Set([
+  "/retell/tools/getCallTimer",
+  "/retell/tools/get_call_timer",
+  "/retell/tools/getcalltimer"
+]);
 
 function getOrCreateSessionId(callId: string | undefined, callerPhone?: string): number | undefined {
   if (!callId) {
@@ -198,7 +227,115 @@ function getOrCreateSessionId(callId: string | undefined, callerPhone?: string):
   });
   db.logTurn(sessionId, "system", `Retell call session opened for call_id=${callId}.`);
   callSessionMap.set(callId, sessionId);
+  timerStartedAtMsMap.set(callId, Date.now());
+  timerEndedMap.set(callId, false);
   return sessionId;
+}
+
+function toSecondsFromSecondsField(value: number): number {
+  if (value < 0) {
+    return 0;
+  }
+  return Math.floor(value);
+}
+
+function toSecondsFromMillisecondsField(value: number): number {
+  if (value < 0) {
+    return 0;
+  }
+  return Math.floor(value / 1000);
+}
+
+interface ExtractedElapsed {
+  elapsedSeconds?: number;
+  source?: string;
+}
+
+function extractElapsedSeconds(payload: JsonObject, args: JsonObject): ExtractedElapsed {
+  const argsSeconds = asNumber(args.elapsed_seconds) ?? asNumber(args.elapsedSeconds);
+  if (argsSeconds !== undefined) {
+    return {
+      elapsedSeconds: toSecondsFromSecondsField(argsSeconds),
+      source: "args.seconds_field"
+    };
+  }
+
+  const argsMs = asNumber(args.elapsed_ms) ?? asNumber(args.elapsedMs);
+  if (argsMs !== undefined) {
+    return {
+      elapsedSeconds: toSecondsFromMillisecondsField(argsMs),
+      source: "args.milliseconds_field"
+    };
+  }
+
+  const payloadSeconds =
+    asNumber(payload.elapsed_seconds) ??
+    asNumber(payload.elapsedSeconds) ??
+    asNumber(payload.call_elapsed_seconds) ??
+    asNumber(payload.duration_seconds);
+  if (payloadSeconds !== undefined) {
+    return {
+      elapsedSeconds: toSecondsFromSecondsField(payloadSeconds),
+      source: "payload.seconds_field"
+    };
+  }
+
+  const payloadMs =
+    asNumber(payload.elapsed_ms) ??
+    asNumber(payload.elapsedMs) ??
+    asNumber(payload.call_duration_ms) ??
+    asNumber(payload.duration_ms);
+  if (payloadMs !== undefined) {
+    return {
+      elapsedSeconds: toSecondsFromMillisecondsField(payloadMs),
+      source: "payload.milliseconds_field"
+    };
+  }
+
+  const call = asObject(payload.call);
+  if (call) {
+    const nestedSeconds =
+      asNumber(call.elapsed_seconds) ??
+      asNumber(call.duration_seconds) ??
+      asNumber(call.call_elapsed_seconds);
+    if (nestedSeconds !== undefined) {
+      return {
+        elapsedSeconds: toSecondsFromSecondsField(nestedSeconds),
+        source: "call.seconds_field"
+      };
+    }
+    const nestedMs = asNumber(call.elapsed_ms) ?? asNumber(call.duration_ms) ?? asNumber(call.call_duration_ms);
+    if (nestedMs !== undefined) {
+      return {
+        elapsedSeconds: toSecondsFromMillisecondsField(nestedMs),
+        source: "call.milliseconds_field"
+      };
+    }
+  }
+
+  return {};
+}
+
+function resolveTimerKey(callId: string | undefined, payload: JsonObject, args: JsonObject): string {
+  return (
+    callId ??
+    asString(args.timer_key) ??
+    asString(args.session_key) ??
+    asString(payload.conversation_id) ??
+    asString(payload.session_id) ??
+    asString(payload.test_job_id) ??
+    "retell-default-timer"
+  );
+}
+
+function getOrCreateCallStartMs(timerKey: string): number {
+  const existing = timerStartedAtMsMap.get(timerKey);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const now = Date.now();
+  timerStartedAtMsMap.set(timerKey, now);
+  return now;
 }
 
 function logToolEvent(
@@ -373,6 +510,81 @@ function handleRescheduleAppointment(payload: JsonObject, response: http.ServerR
   sendJson(response, 200, rescheduled);
 }
 
+function handleGetCallTimer(payload: JsonObject, response: http.ServerResponse): void {
+  const args = extractToolArgs(payload);
+  const callId = extractCallId(payload);
+  const sessionId = getOrCreateSessionId(callId, extractCallerPhone(payload));
+  const timerKey = resolveTimerKey(callId, payload, args);
+  const nowMs = Date.now();
+  const lastSeenAtMs = timerLastSeenAtMsMap.get(timerKey);
+  const hadPriorTimerState = timerStartedAtMsMap.has(timerKey);
+
+  const checkpoint = asString(args.checkpoint)?.toLowerCase();
+  const shouldResetByCheckpoint = checkpoint === "first_turn" || checkpoint === "call_start" || checkpoint === "reset";
+  const autoResetAfterPriorEnd = Boolean(!shouldResetByCheckpoint && timerEndedMap.get(timerKey));
+  const wrapAtSeconds = Math.max(30, Math.floor(runtimeConfig.voiceWrapupSeconds));
+  const hardEndAtSeconds = Math.max(wrapAtSeconds + 15, Math.floor(runtimeConfig.voiceHardMaxSeconds));
+
+  const extracted = extractElapsedSeconds(payload, args);
+  const hasElapsedFromPayload = extracted.elapsedSeconds !== undefined && extracted.source !== "derived_from_call_start";
+  const autoResetAfterInactivity = Boolean(
+    !shouldResetByCheckpoint &&
+      !hasElapsedFromPayload &&
+      lastSeenAtMs !== undefined &&
+      nowMs - lastSeenAtMs > TIMER_IDLE_RESET_MS
+  );
+  const timerResetApplied = shouldResetByCheckpoint || autoResetAfterPriorEnd || autoResetAfterInactivity;
+  const staleFirstTimerReset =
+    !timerResetApplied &&
+    !hadPriorTimerState &&
+    extracted.elapsedSeconds !== undefined &&
+    extracted.elapsedSeconds >= hardEndAtSeconds;
+
+  if (timerResetApplied || staleFirstTimerReset) {
+    timerStartedAtMsMap.set(timerKey, nowMs);
+    timerEndedMap.set(timerKey, false);
+  }
+
+  const elapsedSeconds = timerResetApplied
+    ? 0
+    : staleFirstTimerReset
+      ? 0
+    : extracted.elapsedSeconds !== undefined
+      ? extracted.elapsedSeconds
+      : Math.max(0, Math.floor((Date.now() - getOrCreateCallStartMs(timerKey)) / 1000));
+  const timerSource = timerResetApplied
+    ? autoResetAfterPriorEnd
+      ? "auto_reset_after_prior_hard_end"
+      : autoResetAfterInactivity
+        ? "auto_reset_after_idle_gap"
+      : "checkpoint_reset"
+    : staleFirstTimerReset
+      ? "auto_reset_stale_elapsed_on_first_invocation"
+      : extracted.source ?? "derived_from_call_start";
+
+  if (elapsedSeconds >= hardEndAtSeconds) {
+    timerEndedMap.set(timerKey, true);
+  }
+  timerLastSeenAtMsMap.set(timerKey, nowMs);
+
+  const result = {
+    ok: true,
+    elapsed_seconds: elapsedSeconds,
+    should_wrap: elapsedSeconds >= wrapAtSeconds,
+    should_end: elapsedSeconds >= hardEndAtSeconds,
+    wrap_at_seconds: wrapAtSeconds,
+    hard_end_at_seconds: hardEndAtSeconds,
+    seconds_remaining: Math.max(0, hardEndAtSeconds - elapsedSeconds),
+    checkpoint: checkpoint ?? null,
+    timer_reset_applied: timerResetApplied,
+    timer_source: timerSource,
+    timer_key: timerKey
+  };
+
+  logToolEvent(sessionId, "retell.getCallTimer", args, result, "ok");
+  sendJson(response, 200, result);
+}
+
 function handleWebhook(payload: JsonObject, requestRaw: string, response: http.ServerResponse): void {
   if (retellWebhookSecret) {
     const signature =
@@ -398,6 +610,9 @@ function handleWebhook(payload: JsonObject, requestRaw: string, response: http.S
     db.endCallSession(sessionId, outcome);
     if (callId) {
       callSessionMap.delete(callId);
+      timerStartedAtMsMap.delete(callId);
+      timerEndedMap.delete(callId);
+      timerLastSeenAtMsMap.delete(callId);
     }
   }
 
@@ -408,8 +623,9 @@ const server = http.createServer(async (request, response) => {
   try {
     const method = request.method ?? "GET";
     const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
+    const path = url.pathname;
 
-    if (method === "GET" && url.pathname === "/health") {
+    if (method === "GET" && path === "/health") {
       sendJson(response, 200, {
         ok: true,
         service: "retell-bridge",
@@ -420,7 +636,7 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
-    if (method === "GET" && url.pathname === "/retell/webhook") {
+    if (method === "GET" && path === "/retell/webhook") {
       sendJson(response, 200, {
         ok: true,
         message: "Retell webhook endpoint reachable."
@@ -443,27 +659,32 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
-    if (url.pathname === "/retell/tools/listAvailability") {
+    if (listAvailabilityPaths.has(path)) {
       handleListAvailability(payload, response);
       return;
     }
 
-    if (url.pathname === "/retell/tools/createAppointment") {
+    if (createAppointmentPaths.has(path)) {
       handleCreateAppointment(payload, response);
       return;
     }
 
-    if (url.pathname === "/retell/tools/cancelAppointment") {
+    if (cancelAppointmentPaths.has(path)) {
       handleCancelAppointment(payload, response);
       return;
     }
 
-    if (url.pathname === "/retell/tools/rescheduleAppointment") {
+    if (rescheduleAppointmentPaths.has(path)) {
       handleRescheduleAppointment(payload, response);
       return;
     }
 
-    if (url.pathname === "/retell/webhook") {
+    if (getCallTimerPaths.has(path)) {
+      handleGetCallTimer(payload, response);
+      return;
+    }
+
+    if (path === "/retell/webhook") {
       handleWebhook(payload, body.raw, response);
       return;
     }
@@ -486,6 +707,8 @@ server.listen(retellPort, () => {
   console.log("[SYSTEM]   POST /retell/tools/createAppointment");
   console.log("[SYSTEM]   POST /retell/tools/cancelAppointment");
   console.log("[SYSTEM]   POST /retell/tools/rescheduleAppointment");
+  console.log("[SYSTEM]   POST /retell/tools/getCallTimer");
+  console.log("[SYSTEM]   (snake_case + lowercase aliases also accepted for tool routes)");
   console.log("[SYSTEM]   POST /retell/webhook");
 });
 
